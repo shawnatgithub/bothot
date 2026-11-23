@@ -1,0 +1,76 @@
+bothot/
+├── AGENTS.md
+├── ARCHITECTURE.md
+├── STATE_MACHINES.md
+├── TASK_BOARD.md
+├── prisma/
+│   ├── schema.prisma              # 单一数据源 (SSOT)
+│   └── seed.ts                    # 初始连接器风险表、分类、默认 ranking_params
+├── messages/
+│   ├── en.json                    # 英文静态 i18n
+│   └── zh.json                    # 中文静态 i18n
+├── scripts/
+│   └── check-compliance.ts        # CI 禁用词与安全红线扫描脚本
+└── src/
+    ├── types/
+    │   └── api-contract.ts        # 前后端共享 Zod Schema 与 DTO 类型
+    ├── lib/
+    │   ├── db.ts                  # Prisma Client 单例
+    │   ├── redis.ts               # Upstash Redis 客户端与限流封装
+    │   ├── storage.ts             # 私有存储适配层 (R2 / Supabase Storage)
+    │   ├── auth.ts                # Auth.js 配置 (X + GitHub + 账号绑定 + 权重计算)
+    │   ├── rbac.ts                # 后台角色鉴权与 admin_audit_log 写入器
+    │   ├── normalize.ts           # URL 规范化与 canonical_key 生成 (TDD)
+    │   ├── email.ts               # 事务邮件发送 (申诉结案 / superseded 通知)
+    │   ├── adapters/
+    │   │   ├── types.ts           # CitationRecord 统一接口
+    │   │   ├── github.ts          # GitHub Search API 适配器
+    │   │   └── x/
+    │   │       ├── index.ts       # 可配置切换的 X 适配器入口 (预留 2 家备用)
+    │   │       ├── provider-a.ts
+    │   │       └── provider-b.ts
+    │   ├── audit/
+    │   │   ├── rules-config.json  # 规则库初稿 (R-01~05, G-01~04, Y-01~06)
+    │   │   ├── prescreen.ts       # 正则与关键词初筛脚本 (TDD)
+    │   │   └── state.ts           # 报告发布、双人复核、降级判定逻辑
+    │   ├── ranking/
+    │   │   ├── cold-start.ts      # ColdStart Score + P95/小样本逻辑 (TDD)
+    │   │   ├── trending.ts        # Trending 衰减 + 简化版自动切换逻辑 (TDD)
+    │   │   └── snapshot.ts        # 每日 00:00 UTC 快照 & 日内 revision 重算 (TDD)
+    │   └── tracking/
+    │       └── outbound.ts        # 自然/直链判定、24h 去重、爬虫与内部流量排除 (TDD)
+    ├── app/
+    │   ├── [locale]/              # 公开前台 (en / zh)
+    │   │   ├── page.tsx           # 总榜 (US-01, US-03, US-04, US-12)
+    │   │   ├── new/page.tsx       # 新上榜 (US-02)
+    │   │   ├── trending/page.tsx  # Trending / 本周新增引用 (US-16)
+    │   │   ├── bots/[slug]/page.tsx # Bot 详情决策页 (US-06, US-07, US-09, US-10)
+    │   │   ├── bots/[slug]/appeal/page.tsx # 申诉页 (US-13)
+    │   │   ├── submit/page.tsx    # 投稿页 (US-11)
+    │   │   ├── methodology/page.tsx # 审计方法论页 (US-15)
+    │   │   ├── legal/[doc]/page.tsx # privacy / terms / disclaimer (US-15)
+    │   │   └── me/page.tsx        # 个人页 (收藏/投稿/投票/绑定/注销)
+    │   ├── admin/                 # 运营后台 (noindex, 仅 GitHub + 白名单)
+    │   │   ├── import/page.tsx    # 批量导入 (US-17)
+    │   │   ├── audit/page.tsx     # 审核工作台 (US-18)
+    │   │   ├── submissions/page.tsx # 投稿审核 (US-19)
+    │   │   ├── appeals/page.tsx   # 申诉处理 (US-20)
+    │   │   ├── bots/page.tsx      # 失效标记 / 下架 / 补录引用 (US-21, D33)
+    │   │   ├── reports/page.tsx   # 安全报告看板 & CSV 导出 (US-23)
+    │   │   ├── honor-cards/page.tsx # Top 30 荣誉卡片生成 (US-24)
+    │   │   ├── gate/page.tsx      # 放量门槛与护栏监控看板 (US-25, D38)
+    │   │   └── settings/page.tsx  # 限流配置 / X 抓取开关 / 规则库 (D36, US-27)
+    │   └── api/
+    │       ├── auth/[...nextauth]/route.ts
+    │       ├── og/route.tsx       # 动态中英文 OG 图 (US-14)
+    │       ├── v1/                # 公开接口 (bots, track/outbound, votes, bookmarks, submissions, appeals)
+    │       ├── admin/             # 后台接口 (强制 RBAC + 审计日志)
+    │       └── cron/
+    │           ├── daily-snapshot/route.ts    # 00:00 UTC 快照 + 指标日汇总
+    │           ├── github-citations/route.ts  # 每日 GitHub 引用刷新 (US-26)
+    │           ├── cleanup-raw/route.ts       # 到期原文删除 + 180天兜底 (D34, D41)
+    │           ├── cleanup-events/route.ts    # 6 个月原始事件清理 (D35)
+    │           └── sla-alerts/route.ts        # 48h 投稿 / 7d 申诉超时告警
+    └── components/
+        ├── public/                # 榜单行、安全卡片、筛选条、出站按钮、登录弹窗
+        └── admin/                 # 审核三栏布局、导入校验器、看板图表

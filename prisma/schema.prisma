@@ -1,0 +1,532 @@
+---
+
+## 3. `prisma/schema.prisma`
+
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 枚举定义 ====================
+
+enum UserRole {
+  user
+  ops
+  reviewer
+  admin
+}
+
+enum AuthProvider {
+  x
+  github
+}
+
+enum BotSource {
+  official_marketplace
+  github
+  x
+  submission
+}
+
+enum BotStatus {
+  pending
+  active
+  archived
+  rejected
+  taken_down
+}
+
+enum ConnectorScope {
+  read
+  write
+  send
+}
+
+enum SafetyLevel {
+  green
+  yellow
+  gray
+  red
+}
+
+enum AuditMode {
+  manual
+  auto
+}
+
+enum ReportStatus {
+  draft
+  in_review
+  published
+  superseded
+}
+
+enum CitationSourceType {
+  github
+  x
+  blog
+  reddit
+}
+
+enum CollectedVia {
+  manual
+  one_off_scrape
+  api
+  crawler
+}
+
+enum SubmissionStatus {
+  pending
+  approved
+  rejected
+  duplicate
+}
+
+enum EntryType {
+  organic
+  direct
+}
+
+enum BoardType {
+  all_time
+  new
+  trending
+  trending_simple
+  category
+}
+
+enum SnapshotTriggerType {
+  daily
+  archived
+  escalated
+  taken_down
+}
+
+enum AppealStatus {
+  open
+  upheld
+  revised
+  superseded
+}
+
+enum AppealSupersededReason {
+  config_changed
+  archived
+  taken_down
+}
+
+// ==================== 用户与认证 ====================
+
+model User {
+  id        String    @id @default(cuid())
+  role      UserRole  @default(user)
+  locale    String    @default("en") // "en" | "zh"
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  identities       UserIdentity[]
+  submissions      Submission[]          @relation("Submitter")
+  reviewedSubs     Submission[]          @relation("SubmissionReviewer")
+  votes            InSiteVote[]
+  bookmarks        Bookmark[]
+  outboundClicks   OutboundClickEvent[]
+  appeals          Appeal[]              @relation("AppealSubmitter")
+  resolvedAppeals  Appeal[]              @relation("AppealResolver")
+  auditLogs        AdminAuditLog[]
+  reportsAsRevA    VerificationReport[]  @relation("ReviewerA")
+  reportsAsRevB    VerificationReport[]  @relation("ReviewerB")
+  manualCitations  CitationSignal[]      @relation("CitationCollector")
+
+  @@map("users")
+}
+
+model UserIdentity {
+  id               String       @id @default(cuid())
+  userId           String       @map("user_id")
+  provider         AuthProvider
+  providerUserId   String       @map("provider_user_id")
+  handle           String
+  accountCreatedAt DateTime?    @map("account_created_at")
+  accountWeight    Float        @default(0.2) @map("account_weight")
+  linkedAt         DateTime     @default(now()) @map("linked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("user_identities")
+}
+
+// ==================== Bot 核心元数据与版本 ====================
+
+model Bot {
+  id                 String    @id @default(cuid())
+  officialUrl        String    @unique @map("official_url")
+  canonicalKey       String    @unique @map("canonical_key")
+  slug               String    @unique
+  name               String
+  summaryEn          String    @map("summary_en")
+  summaryZh          String?   @map("summary_zh")
+  summaryZhProofread Boolean   @default(false) @map("summary_zh_proofread")
+  authorHandle       String?   @map("author_handle")
+  authorGithub       String?   @map("author_github")
+  hasRoutine         Boolean   @default(false) @map("has_routine")
+  source             BotSource
+  status             BotStatus @default(pending)
+  firstCitedAt       DateTime? @map("first_cited_at")
+  collectedAt        DateTime  @default(now()) @map("collected_at")
+  archivedAt         DateTime? @map("archived_at")
+  takenDownAt        DateTime? @map("taken_down_at")
+  takenDownReason    String?   @map("taken_down_reason")
+  currentVersionId   String?   @map("current_version_id")
+  // Phase 2: embedding Unsupported("vector(1536)")?
+
+  aliases        BotUrlAlias[]
+  versions       BotVersion[]
+  connectors     BotConnector[]
+  categories     BotCategory[]
+  reports        VerificationReport[]
+  citations      CitationSignal[]
+  submissions    Submission[]
+  votes          InSiteVote[]
+  bookmarks      Bookmark[]
+  outboundClicks OutboundClickEvent[]
+  dailyMetrics   InSiteMetricsDaily[]
+  snapshots      RankingsSnapshot[]
+  appeals        Appeal[]
+
+  @@index([status])
+  @@index([firstCitedAt])
+  @@map("bots")
+}
+
+model BotUrlAlias {
+  id       String @id @default(cuid())
+  botId    String @map("bot_id")
+  aliasUrl String @unique @map("alias_url")
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId])
+  @@map("bot_url_aliases")
+}
+
+model BotVersion {
+  id            String    @id @default(cuid())
+  botId         String    @map("bot_id")
+  contentHash   String    @map("content_hash")
+  fetchedAt     DateTime  @default(now()) @map("fetched_at")
+  rawStorageKey String?   @map("raw_storage_key") // 私有桶路径 raw/{bot_id}/{version_id}，删除后置空
+  rawExpiresAt  DateTime? @map("raw_expires_at")
+  rawDeletedAt  DateTime? @map("raw_deleted_at")
+
+  bot     Bot                  @relation(fields: [botId], references: [id], onDelete: Cascade)
+  reports VerificationReport[]
+  appeals Appeal[]
+
+  @@index([botId])
+  @@index([rawExpiresAt])
+  @@map("bot_versions")
+}
+
+// ==================== 连接器与分类 ====================
+
+model Connector {
+  id       String  @id @default(cuid())
+  key      String  @unique
+  name     String
+  riskRule String? @map("risk_rule") // 如 "Y-01"
+  icon     String
+
+  bots BotConnector[]
+
+  @@map("connectors")
+}
+
+model BotConnector {
+  botId       String         @map("bot_id")
+  connectorId String         @map("connector_id")
+  scope       ConnectorScope @default(read)
+
+  bot       Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@id([botId, connectorId])
+  @@map("bot_connectors")
+}
+
+model Category {
+  id     String @id @default(cuid())
+  key    String @unique
+  nameEn String @map("name_en")
+  nameZh String @map("name_zh")
+
+  bots BotCategory[]
+
+  @@map("categories")
+}
+
+model BotCategory {
+  botId      String @map("bot_id")
+  categoryId String @map("category_id")
+
+  bot      Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([botId, categoryId])
+  @@map("bot_categories")
+}
+
+// ==================== 安全审计与申诉 ====================
+
+model VerificationReport {
+  id           String       @id @default(cuid())
+  botId        String       @map("bot_id")
+  botVersionId String       @map("bot_version_id")
+  safetyLevel  SafetyLevel  @map("safety_level")
+  subTags      Json         @default("[]") @map("sub_tags")   // string[]
+  ruleHits     Json         @default("[]") @map("rule_hits")  // { rule_id, evidence_en, evidence_zh }[]
+  auditMode    AuditMode    @default(manual) @map("audit_mode")
+  reviewerAId  String?      @map("reviewer_a_id")
+  reviewerBId  String?      @map("reviewer_b_id")
+  sampled      Boolean      @default(false)
+  zhProofread  Boolean      @default(false) @map("zh_proofread")
+  status       ReportStatus @default(draft)
+  isCurrent    Boolean      @default(false) @map("is_current")
+  scannedAt    DateTime     @default(now()) @map("scanned_at")
+  publishedAt  DateTime?    @map("published_at")
+
+  bot        Bot        @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botVersion BotVersion @relation(fields: [botVersionId], references: [id])
+  reviewerA  User?      @relation("ReviewerA", fields: [reviewerAId], references: [id])
+  reviewerB  User?      @relation("ReviewerB", fields: [reviewerBId], references: [id])
+  appeals    Appeal[]
+
+  @@index([botId, isCurrent])
+  @@index([status])
+  @@map("verification_reports")
+}
+
+model Appeal {
+  id               String                  @id @default(cuid())
+  botId            String                  @map("bot_id")
+  reportId         String                  @map("report_id")
+  botVersionId     String                  @map("bot_version_id")
+  userId           String                  @map("user_id")
+  xHandle          String                  @map("x_handle")
+  contactEmail     String?                 @map("contact_email")
+  ruleIds          String[]                @map("rule_ids")
+  reason           String
+  attachments      Json                    @default("[]")
+  status           AppealStatus            @default(open)
+  supersededReason AppealSupersededReason? @map("superseded_reason")
+  resolutionEn     String?                 @map("resolution_en")
+  resolutionZh     String?                 @map("resolution_zh")
+  openedAt         DateTime                @default(now()) @map("opened_at")
+  dueAt            DateTime                @map("due_at") // openedAt + 7 days
+  resolvedAt       DateTime?               @map("resolved_at")
+  resolvedById     String?                 @map("resolved_by")
+
+  bot        Bot                @relation(fields: [botId], references: [id], onDelete: Cascade)
+  report     VerificationReport @relation(fields: [reportId], references: [id])
+  botVersion BotVersion         @relation(fields: [botVersionId], references: [id])
+  user       User               @relation("AppealSubmitter", fields: [userId], references: [id])
+  resolvedBy User?              @relation("AppealResolver", fields: [resolvedById], references: [id])
+
+  @@index([botId, status])
+  @@index([dueAt])
+  @@map("appeals")
+}
+
+// ==================== 引用、投稿与站内互动 ====================
+
+model CitationSignal {
+  id             String             @id @default(cuid())
+  botId          String             @map("bot_id")
+  sourceType     CitationSourceType @map("source_type")
+  sourceUrl      String             @unique @map("source_url")
+  citerHandle    String             @map("citer_handle")
+  isSelfCitation Boolean            @default(false) @map("is_self_citation")
+  isTeamCitation Boolean            @default(false) @map("is_team_citation")
+  citedAt        DateTime           @map("cited_at")
+  detectedAt     DateTime           @default(now()) @map("detected_at")
+  collectedVia   CollectedVia       @map("collected_via")
+  collectedById  String?            @map("collected_by")
+
+  bot         Bot   @relation(fields: [botId], references: [id], onDelete: Cascade)
+  collectedBy User? @relation("CitationCollector", fields: [collectedById], references: [id])
+
+  @@index([botId, sourceType])
+  @@index([citedAt])
+  @@map("citation_signals")
+}
+
+model Submission {
+  id              String           @id @default(cuid())
+  submittedUrl    String           @map("submitted_url")
+  canonicalKey    String           @map("canonical_key")
+  submitterUserId String           @map("submitter_user_id")
+  isTeamMember    Boolean          @default(false) @map("is_team_member")
+  reason          String?
+  citationUrls    Json             @default("[]") @map("citation_urls")
+  status          SubmissionStatus @default(pending)
+  rejectReason    String?          @map("reject_reason")
+  botId           String?          @map("bot_id")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  reviewedAt      DateTime?        @map("reviewed_at")
+  reviewedById    String?          @map("reviewed_by")
+
+  submitter  User  @relation("Submitter", fields: [submitterUserId], references: [id])
+  reviewedBy User? @relation("SubmissionReviewer", fields: [reviewedById], references: [id])
+  bot        Bot?  @relation(fields: [botId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([canonicalKey])
+  @@map("submissions")
+}
+
+model InSiteVote {
+  id            String    @id @default(cuid())
+  botId         String    @map("bot_id")
+  userId        String    @map("user_id")
+  accountWeight Float     @map("account_weight")
+  navSource     String?   @map("nav_source")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  bot  Bot  @relation(fields: [botId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, userId])
+  @@index([botId])
+  @@map("in_site_votes")
+}
+
+model Bookmark {
+  userId    String   @map("user_id")
+  botId     String   @map("bot_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bot  Bot  @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@id([userId, botId])
+  @@map("bookmarks")
+}
+
+// ==================== 埋点、汇总与榜单快照 ====================
+
+model OutboundClickEvent {
+  id            String    @id @default(cuid())
+  botId         String    @map("bot_id")
+  userId        String?   @map("user_id")
+  sessionId     String?   @map("session_id")
+  ipHash        String    @map("ip_hash")
+  entryType     EntryType @map("entry_type")
+  sourcePage    String    @map("source_page")
+  boardType     String?   @map("board_type")
+  rankPosition  Int?      @map("rank_position")
+  locale        String
+  referrer      String?
+  isDuplicate   Boolean   @default(false) @map("is_duplicate")
+  isExcluded    Boolean   @default(false) @map("is_excluded")
+  excludeReason String?   @map("exclude_reason")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  bot  Bot   @relation(fields: [botId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([createdAt, entryType, isExcluded, isDuplicate])
+  @@index([botId, createdAt])
+  @@map("outbound_click_events")
+}
+
+model InSiteMetricsDaily {
+  botId                 String   @map("bot_id")
+  date                  DateTime @db.Date
+  organicOutboundClicks Int      @default(0) @map("organic_outbound_clicks")
+  directOutboundClicks  Int      @default(0) @map("direct_outbound_clicks")
+  rawUpvotes            Int      @default(0) @map("raw_upvotes")
+  weightedUpvotes       Float    @default(0) @map("weighted_upvotes")
+  bookmarks             Int      @default(0)
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@id([botId, date])
+  @@map("in_site_metrics_daily")
+}
+
+model SnapshotRevision {
+  snapshotDate DateTime            @map("snapshot_date") @db.Date
+  revision     Int                 @default(0)
+  triggerType  SnapshotTriggerType @map("trigger_type")
+  triggerBotId String?             @map("trigger_bot_id")
+  triggeredBy  String?             @map("triggered_by")
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  @@id([snapshotDate, revision])
+  @@map("snapshot_revisions")
+}
+
+model RankingsSnapshot {
+  snapshotDate   DateTime    @map("snapshot_date") @db.Date
+  revision       Int         @default(0)
+  boardType      BoardType   @map("board_type")
+  categoryKey    String      @default("_all") @map("category_key")
+  botId          String      @map("bot_id")
+  score          Float
+  displayScore   Int         @map("display_score")
+  rank           Int?        // 🔴 高风险 Bot 为空，不占名次
+  safetyLevel    SafetyLevel @map("safety_level")
+  rankDelta7d    Int?        @map("rank_delta_7d")
+  newCitations7d Int?        @map("new_citations_7d")
+  paramsVersion  String      @map("params_version")
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@id([snapshotDate, revision, boardType, categoryKey, botId])
+  @@index([boardType, snapshotDate, revision, rank])
+  @@map("rankings_snapshot")
+}
+
+model RankingParam {
+  version       String   @id
+  params        Json     // { w_github, w_x, w_blog_reddit, G, safety_multipliers, ... }
+  effectiveFrom DateTime @map("effective_from")
+  createdBy     String   @map("created_by")
+
+  @@map("ranking_params")
+}
+
+// ==================== 后台审计日志与运行时配置 ====================
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String   @map("actor_id")
+  action     String   // 如 "report.publish", "raw.view", "bot.archive", "config.update"
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("admin_audit_log")
+}
+
+model SystemConfig {
+  key       String   @id // 如 "rate_limits", "x_scrape_enabled", "team_x_handles", "internal_ips"
+  value     Json
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_configs")
+}
